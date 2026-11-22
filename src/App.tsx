@@ -75,6 +75,7 @@ export default function App() {
     typeof window !== 'undefined' ? resolvePortalFromPathname(window.location.pathname) : 'admin',
   );
   const [authInitialized, setAuthInitialized] = useState<boolean | null>(null);
+  const [wsSupported, setWsSupported] = useState<boolean>(true);
   const [session, setSession] = useState<AuthSession | null>(() =>
     loadStoredPortalSession(
       typeof window !== 'undefined' ? resolvePortalFromPathname(window.location.pathname) : 'admin',
@@ -94,6 +95,8 @@ export default function App() {
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
+  const seenAlertIdsRef = useRef<Set<string>>(new Set());
+  const seenReportIdsRef = useRef<Set<string>>(new Set());
 
   const t = TRANSLATIONS[lang];
 
@@ -132,8 +135,11 @@ export default function App() {
   useEffect(() => {
     fetch('/api/auth/status')
       .then((res) => res.json())
-      .then((data: { initialized: boolean }) => {
+      .then((data: { initialized: boolean; wsSupported?: boolean }) => {
         setAuthInitialized(data.initialized);
+        if (typeof data.wsSupported === 'boolean') {
+          setWsSupported(data.wsSupported);
+        }
       })
       .catch(() => {
         setAuthInitialized(false);
@@ -162,24 +168,75 @@ export default function App() {
     [session, portal],
   );
 
-  const loadSnapshot = useCallback(async () => {
-    if (!session) return;
-    const res = await authFetch('/api/soc/snapshot');
-    if (res.ok) {
-      const data = (await res.json()) as SocSnapshot;
-      setSnapshot(data);
-    }
-  }, [session, authFetch]);
+  const loadSnapshot = useCallback(
+    async (liveTick = false) => {
+      if (!session) return;
+      const res = await authFetch(liveTick ? '/api/soc/snapshot?live=1' : '/api/soc/snapshot');
+      if (res.ok) {
+        const data = (await res.json()) as SocSnapshot;
+        if (seenAlertIdsRef.current.size === 0) {
+          data.alerts.forEach((a) => seenAlertIdsRef.current.add(a.id));
+        } else {
+          const newestAlert = data.alerts.find((a) => !seenAlertIdsRef.current.has(a.id));
+          data.alerts.forEach((a) => seenAlertIdsRef.current.add(a.id));
+          if (newestAlert) setToastAlert(newestAlert);
+        }
+
+        if (seenReportIdsRef.current.size === 0) {
+          data.userReports.forEach((r) => seenReportIdsRef.current.add(r.id));
+        } else {
+          const newestReport = data.userReports.find(
+            (r) => r.status === 'open' && !seenReportIdsRef.current.has(r.id),
+          );
+          data.userReports.forEach((r) => seenReportIdsRef.current.add(r.id));
+          if (newestReport && session.roleKey === 'admin') setToastReport(newestReport);
+        }
+
+        setSnapshot(data);
+        if (liveTick) {
+          setWsConnected(true);
+        }
+      }
+    },
+    [session, authFetch],
+  );
 
   useEffect(() => {
     if (!session) return;
-    loadSnapshot();
+    seenAlertIdsRef.current.clear();
+    seenReportIdsRef.current.clear();
+    loadSnapshot(false).catch(() => {});
 
     let closedIntentionally = false;
+    let pollTimer: number | null = null;
+    let consecutiveWsFailures = 0;
+
+    const startHttpPollingFallback = () => {
+      if (pollTimer !== null || closedIntentionally) return;
+      setWsConnected(true);
+      pollTimer = window.setInterval(() => {
+        loadSnapshot(true).catch(() => {
+          setWsConnected(false);
+        });
+      }, 2500);
+    };
+
+    if (!wsSupported) {
+      startHttpPollingFallback();
+      return () => {
+        closedIntentionally = true;
+        if (pollTimer !== null) {
+          window.clearInterval(pollTimer);
+        }
+      };
+    }
+
     const connectWs = () => {
+      if (closedIntentionally) return;
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const ws = new WebSocket(`${proto}//${window.location.host}/ws`);
       wsRef.current = ws;
+      let authedThisSocket = false;
 
       ws.onopen = () => {
         ws.send(JSON.stringify({ type: 'auth', token: session.token }));
@@ -193,6 +250,8 @@ export default function App() {
           };
 
           if (msg.type === 'auth:ok') {
+            authedThisSocket = true;
+            consecutiveWsFailures = 0;
             setWsConnected(true);
             return;
           }
@@ -226,6 +285,7 @@ export default function App() {
             const trafficSample = msg.payload.trafficSample as TrafficSample | undefined;
             const cluster = msg.payload.cluster as ClusterConfig | undefined;
             const simulation = msg.payload.simulation as AttackSimulationState | undefined;
+            seenAlertIdsRef.current.add(alert.id);
             setSnapshot((prev) => {
               if (!prev) return prev;
               const alerts = prev.alerts.some((a) => a.id === alert.id)
@@ -325,6 +385,7 @@ export default function App() {
           if (msg.type === 'user:report_created') {
             const report = msg.payload.report as UserComplaintReport;
             const notification = msg.payload.notification as SecurityNotification | undefined;
+            seenReportIdsRef.current.add(report.id);
             setSnapshot((prev) => {
               if (!prev) return prev;
               const userReports = prev.userReports.some((r) => r.id === report.id)
@@ -380,9 +441,15 @@ export default function App() {
 
       ws.onclose = () => {
         setWsConnected(false);
-        if (!closedIntentionally) {
-          reconnectTimerRef.current = window.setTimeout(connectWs, 2500);
+        if (closedIntentionally) return;
+        if (!authedThisSocket) {
+          consecutiveWsFailures += 1;
         }
+        if (consecutiveWsFailures >= 2) {
+          startHttpPollingFallback();
+          return;
+        }
+        reconnectTimerRef.current = window.setTimeout(connectWs, 2500);
       };
     };
 
@@ -393,9 +460,12 @@ export default function App() {
       if (reconnectTimerRef.current !== null) {
         window.clearTimeout(reconnectTimerRef.current);
       }
+      if (pollTimer !== null) {
+        window.clearInterval(pollTimer);
+      }
       wsRef.current?.close();
     };
-  }, [session, portal, loadSnapshot]);
+  }, [session, portal, wsSupported, loadSnapshot]);
 
   async function handleLogout() {
     try {

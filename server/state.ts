@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {
   computeLogIntegrityHash,
@@ -132,7 +133,9 @@ export class SecurityWorkspaceStore {
     lastTriggeredAt: null,
   };
 
-  private readonly dataDir = path.resolve(process.cwd(), '.sentinelgrid-data');
+  private readonly dataDir = process.env.VERCEL
+    ? path.resolve(os.tmpdir(), '.sentinelgrid-data')
+    : path.resolve(process.cwd(), '.sentinelgrid-data');
   private readonly accountsFile = path.resolve(this.dataDir, 'accounts.json');
 
   public trafficHistory: TrafficSample[] = [];
@@ -151,25 +154,46 @@ export class SecurityWorkspaceStore {
     requireMfaForDecryption: true,
     requireMfaForKeyRotation: true,
   };
+  public revokedSessionIds: Set<string> = new Set();
 
   private logSequence = 0;
   private alertCounter = 1040;
   private reportCounter = 47;
   private userCounter = 200;
   private complaintCounter = 100;
+  private lastLiveTickAt = 0;
+  private lastSimWaveAt = 0;
+  private simWavesCounter = 0;
 
   constructor() {
+    const vercelFallbackSeed =
+      process.env.VERCEL_PROJECT_PRODUCTION_URL ||
+      process.env.VERCEL_URL ||
+      process.env.VERCEL_GIT_COMMIT_SHA ||
+      'sentinelgrid-vercel-runtime';
+
     this.sessionSigningSecret =
-      process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
-    const primaryKeyHex = process.env.E2E_LOG_KEY || generateEncryptionKeyHex();
+      process.env.SESSION_SECRET?.trim() ||
+      (process.env.VERCEL
+        ? crypto.createHash('sha256').update(`session:${vercelFallbackSeed}`).digest('hex')
+        : crypto.randomBytes(32).toString('hex'));
+
+    const envKeyHex = process.env.E2E_LOG_KEY?.trim();
+    const primaryKeyHex =
+      envKeyHex && /^[0-9a-fA-F]{64}$/.test(envKeyHex)
+        ? envKeyHex
+        : process.env.VERCEL
+          ? crypto.createHash('sha256').update(`e2e:${vercelFallbackSeed}`).digest('hex')
+          : generateEncryptionKeyHex();
     this.encryptionKeys.set(this.activeKeyId, primaryKeyHex);
 
     this.loadAccountsFromDisk();
 
     if (process.env.ADMIN_PASSCODE && process.env.ADMIN_PASSCODE.trim().length >= 6) {
       if (!this.admin) {
+        const adminEmail = (process.env.ADMIN_EMAIL || 'admin@sentinelgrid.io').trim().toLowerCase();
         this.admin = {
-          email: 'admin@sentinelgrid.io',
+          email: adminEmail,
           passwordHash: hashPasswordScrypt(process.env.ADMIN_PASSCODE.trim()),
           totpSecret: generateTotpSecret(),
           mfaConfirmed: false,
@@ -1366,6 +1390,94 @@ export class SecurityWorkspaceStore {
     };
   }
 
+  public createSignedChallenge(params: {
+    userId: string;
+    email: string;
+    accountType: 'admin' | 'user';
+    isInitialSetup: boolean;
+    ttlMs?: number;
+  }): string {
+    const expiresAt = Date.now() + (params.ttlMs ?? 5 * 60_000);
+    const payload = Buffer.from(
+      JSON.stringify({
+        nonce: crypto.randomBytes(12).toString('hex'),
+        userId: params.userId,
+        email: params.email,
+        accountType: params.accountType,
+        isInitialSetup: params.isInitialSetup,
+        expiresAt,
+      }),
+      'utf8',
+    ).toString('base64url');
+    const sig = crypto
+      .createHmac('sha256', this.sessionSigningSecret)
+      .update(`chal:${payload}`)
+      .digest('base64url');
+    const challengeToken = `${payload}.${sig}`;
+    this.challenges.set(challengeToken, {
+      challengeToken,
+      userId: params.userId,
+      email: params.email,
+      accountType: params.accountType,
+      expiresAt,
+      isInitialSetup: params.isInitialSetup,
+    });
+    return challengeToken;
+  }
+
+  public verifySignedChallenge(challengeToken: string): PendingChallenge | null {
+    const inMem = this.challenges.get(challengeToken);
+    if (inMem) {
+      if (inMem.expiresAt < Date.now()) {
+        this.challenges.delete(challengeToken);
+        return null;
+      }
+      return inMem;
+    }
+
+    const parts = challengeToken.split('.');
+    if (parts.length !== 2) return null;
+    const [payload, sig] = parts;
+    const expectedSig = crypto
+      .createHmac('sha256', this.sessionSigningSecret)
+      .update(`chal:${payload}`)
+      .digest('base64url');
+    const sigBuf = Buffer.from(sig);
+    const expBuf = Buffer.from(expectedSig);
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+      return null;
+    }
+
+    try {
+      const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as {
+        userId?: string;
+        email?: string;
+        accountType?: 'admin' | 'user';
+        isInitialSetup?: boolean;
+        expiresAt?: number;
+      };
+      if (
+        !decoded.userId ||
+        !decoded.email ||
+        !decoded.accountType ||
+        !decoded.expiresAt ||
+        decoded.expiresAt < Date.now()
+      ) {
+        return null;
+      }
+      return {
+        challengeToken,
+        userId: decoded.userId,
+        email: decoded.email,
+        accountType: decoded.accountType,
+        expiresAt: decoded.expiresAt,
+        isInitialSetup: Boolean(decoded.isInitialSetup),
+      };
+    } catch {
+      return null;
+    }
+  }
+
   public createSignedSession(params: {
     userId: string;
     email: string;
@@ -1374,8 +1486,17 @@ export class SecurityWorkspaceStore {
     ipAddress: string;
   }): ServerSession {
     const id = `SES-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+    const iat = Date.now();
+    const exp = iat + 24 * 60 * 60_000;
     const payload = Buffer.from(
-      JSON.stringify({ id, userId: params.userId, email: params.email, iat: Date.now() }),
+      JSON.stringify({
+        id,
+        userId: params.userId,
+        email: params.email,
+        roleKey: params.roleKey,
+        iat,
+        exp,
+      }),
       'utf8',
     ).toString('base64url');
     const sig = crypto
@@ -1401,6 +1522,28 @@ export class SecurityWorkspaceStore {
     return session;
   }
 
+  public revokeToken(token: string) {
+    const existing = this.sessions.get(token);
+    if (existing) {
+      this.revokedSessionIds.add(existing.id);
+      this.sessions.delete(token);
+      return;
+    }
+    const parts = token.split('.');
+    if (parts.length === 2) {
+      try {
+        const decoded = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8')) as {
+          id?: string;
+        };
+        if (decoded.id) {
+          this.revokedSessionIds.add(decoded.id);
+        }
+      } catch {
+        // Ignore malformed token
+      }
+    }
+  }
+
   public verifyBearerToken(token: string | undefined): ServerSession | null {
     if (!token) return null;
     const parts = token.split('.');
@@ -1415,12 +1558,57 @@ export class SecurityWorkspaceStore {
     if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
       return null;
     }
-    const session = this.sessions.get(token);
-    if (!session) return null;
+
+    let decoded: {
+      id?: string;
+      userId?: string;
+      email?: string;
+      roleKey?: UserRole;
+      iat?: number;
+      exp?: number;
+    };
+    try {
+      decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    } catch {
+      return null;
+    }
+
+    if (!decoded.id || !decoded.userId || !decoded.email) return null;
+    if (decoded.exp && decoded.exp < Date.now()) return null;
+    if (this.revokedSessionIds.has(decoded.id)) return null;
+
+    let session = this.sessions.get(token);
+    if (!session) {
+      const roleKey: UserRole =
+        decoded.roleKey && isValidUserRole(decoded.roleKey)
+          ? decoded.roleKey
+          : decoded.userId === 'ADMIN-ROOT'
+            ? 'admin'
+            : 'analyst';
+      const createdIso = decoded.iat ? new Date(decoded.iat).toISOString() : new Date().toISOString();
+      session = {
+        token,
+        id: decoded.id,
+        userId: decoded.userId,
+        email: decoded.email,
+        role: roleDisplayName(roleKey),
+        roleKey,
+        mfaVerified: true,
+        createdAt: createdIso,
+        lastSeenAt: new Date().toISOString(),
+        userAgent: 'Verified Session',
+        ipAddress: 'serverless-edge',
+      };
+      this.sessions.set(token, session);
+    }
 
     if (session.userId !== 'ADMIN-ROOT') {
-      const account = this.users.find((u) => u.id === session.userId);
-      if (!account || account.status !== 'active') {
+      const account = this.users.find((u) => u.id === session!.userId);
+      if (account && account.status !== 'active') {
+        this.sessions.delete(token);
+        return null;
+      }
+      if (!account && !process.env.VERCEL) {
         this.sessions.delete(token);
         return null;
       }
@@ -1428,6 +1616,38 @@ export class SecurityWorkspaceStore {
 
     session.lastSeenAt = new Date().toISOString();
     return session;
+  }
+
+  public advanceLiveTelemetryIfDue() {
+    const now = Date.now();
+    if (now - this.lastLiveTickAt >= 1500) {
+      this.lastLiveTickAt = now;
+      this.generateLiveTrafficTick();
+    }
+    if (!this.simulation.running) {
+      this.simWavesCounter = 0;
+      return;
+    }
+    if (now - this.lastSimWaveAt >= 2600) {
+      this.lastSimWaveAt = now;
+      const simCategories: ThreatCategory[] = [
+        'ddos_volumetric',
+        'sqli_probe',
+        'ssh_bruteforce',
+        'c2_beacon',
+        'data_exfiltration',
+        'lateral_movement',
+      ];
+      const chosen: ThreatCategory =
+        this.simulation.scenario === 'mixed'
+          ? simCategories[this.simWavesCounter % simCategories.length]
+          : this.simulation.scenario;
+      this.simWavesCounter += 1;
+      if (this.simWavesCounter >= 10) {
+        this.simulation.running = false;
+      }
+      this.triggerThreatScenario(chosen);
+    }
   }
 
   public getSnapshot(viewerSession?: ServerSession): SocSnapshot {
