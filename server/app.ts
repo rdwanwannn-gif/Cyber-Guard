@@ -1,15 +1,19 @@
 import crypto from 'node:crypto';
 import express from 'express';
 import {
+  createStatelessEmailOtpChallenge,
   decryptTrafficPayload,
   generateEncryptionKeyHex,
+  generateNumericOtp,
   generateTotpSecret,
   hashApiKey,
   hashPasswordScrypt,
   verifyLogChain,
   verifyPasswordScrypt,
+  verifyStatelessEmailOtpChallenge,
   verifyTotpCode,
 } from '../src/lib/cryptoSecurity';
+import { deliverAdminEmailOtp } from './emailOtp';
 import {
   buildWeeklyReport,
   calculateClusterScale,
@@ -155,6 +159,136 @@ export function createSocApp(
     });
   });
 
+  app.post('/api/auth/admin/request-otp', async (req, res) => {
+    const { email } = req.body as { email?: string };
+    const cleanEmail = (email || '').trim().toLowerCase();
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      res.status(400).json({ error: 'Masukkan alamat email administrator yang valid.' });
+      return;
+    }
+
+    const envAdminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+    if (envAdminEmail && cleanEmail !== envAdminEmail) {
+      res.status(403).json({
+        error: 'Email ini tidak terdaftar sebagai Administrator utama.',
+      });
+      return;
+    }
+
+    if (store.admin && store.admin.email !== cleanEmail) {
+      res.status(403).json({
+        error: 'Email bukan Administrator terdaftar. Silakan masuk melalui Portal Pengguna (/user).',
+      });
+      return;
+    }
+
+    const regularUser = store.users.find((u) => u.email === cleanEmail && u.role !== 'admin');
+    if (regularUser) {
+      res.status(403).json({
+        error: 'Akun pengguna silakan masuk melalui Portal Pengguna (/user).',
+      });
+      return;
+    }
+
+    const otp = generateNumericOtp(6);
+    const { challengeToken } = createStatelessEmailOtpChallenge({
+      email: cleanEmail,
+      otp,
+      signingSecret: store.sessionSigningSecret,
+      ttlMs: 10 * 60_000,
+    });
+
+    const delivery = await deliverAdminEmailOtp(cleanEmail, otp);
+    res.json({
+      ok: true,
+      email: cleanEmail,
+      challengeToken,
+      expiresInSeconds: 600,
+      deliveryChannel: delivery.channel,
+      ...(delivery.previewOtp ? { previewOtp: delivery.previewOtp } : {}),
+    });
+  });
+
+  app.post('/api/auth/admin/verify-otp', (req, res) => {
+    const { challengeToken, code } = req.body as { challengeToken?: string; code?: string };
+    if (!challengeToken || !code) {
+      res.status(400).json({ error: 'Token OTP dan kode 6-digit wajib diisi.' });
+      return;
+    }
+
+    const check = verifyStatelessEmailOtpChallenge(
+      challengeToken,
+      code,
+      store.sessionSigningSecret,
+    );
+    if (!check.valid || !check.email || !check.nonce) {
+      res.status(401).json({ error: check.reason || 'Kode OTP email tidak valid.' });
+      return;
+    }
+
+    if (store.consumedOtpNonces.has(check.nonce)) {
+      res.status(401).json({
+        error: 'Kode OTP ini sudah digunakan. Silakan minta kode OTP baru.',
+      });
+      return;
+    }
+
+    const envAdminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+    if (envAdminEmail && check.email !== envAdminEmail) {
+      res.status(403).json({ error: 'Email tidak diizinkan untuk akses Administrator.' });
+      return;
+    }
+    if (store.admin && store.admin.email !== check.email) {
+      res.status(403).json({ error: 'Email bukan Administrator terdaftar.' });
+      return;
+    }
+
+    store.consumedOtpNonces.add(check.nonce);
+    if (store.consumedOtpNonces.size > 500) {
+      const oldest = store.consumedOtpNonces.values().next().value;
+      if (oldest) store.consumedOtpNonces.delete(oldest);
+    }
+
+    if (!store.admin) {
+      const backup = generateBackupCodes();
+      store.admin = {
+        email: check.email,
+        passwordHash: '',
+        totpSecret: generateTotpSecret(),
+        mfaConfirmed: true,
+        backupCodeHashes: backup.hashes,
+      };
+    } else {
+      store.admin.mfaConfirmed = true;
+    }
+    store.persistAccountsToDisk();
+
+    const ipAddress = extractClientIp(
+      req.headers['x-forwarded-for'],
+      req.socket?.remoteAddress,
+    );
+    const deviceInfo = summarizeDeviceUserAgent(req.headers['user-agent']);
+    const session = store.createSignedSession({
+      userId: 'ADMIN-ROOT',
+      email: check.email,
+      roleKey: 'admin',
+      userAgent: deviceInfo,
+      ipAddress,
+    });
+
+    res.json({
+      token: session.token,
+      session: {
+        id: session.id,
+        userId: session.userId,
+        email: session.email,
+        role: session.role,
+        roleKey: session.roleKey,
+        mfaVerified: session.mfaVerified,
+      },
+    });
+  });
+
   app.post('/api/auth/setup', (req, res) => {
     if (store.admin !== null) {
       res.status(409).json({ error: 'Admin workspace has already been initialized' });
@@ -229,7 +363,7 @@ export function createSocApp(
 
     const registeredIp = extractClientIp(
       req.headers['x-forwarded-for'],
-      req.socket.remoteAddress,
+      req.socket?.remoteAddress,
     );
     const deviceInfo = summarizeDeviceUserAgent(req.headers['user-agent']);
 
@@ -395,7 +529,7 @@ export function createSocApp(
     const cleanCode = code.trim().toUpperCase();
     const ipAddress = extractClientIp(
       req.headers['x-forwarded-for'],
-      req.socket.remoteAddress,
+      req.socket?.remoteAddress,
     );
     const deviceInfo = summarizeDeviceUserAgent(req.headers['user-agent']);
 
@@ -584,7 +718,7 @@ export function createSocApp(
     const result = store.applyAdminUserControl({
       userId: req.params.id,
       actorEmail: session.email,
-      actorIp: extractClientIp(req.headers['x-forwarded-for'], req.socket.remoteAddress),
+      actorIp: extractClientIp(req.headers['x-forwarded-for'], req.socket?.remoteAddress),
       actorDevice: summarizeDeviceUserAgent(req.headers['user-agent']),
       action,
       role,
@@ -636,7 +770,7 @@ export function createSocApp(
 
     const ipAddress = extractClientIp(
       req.headers['x-forwarded-for'],
-      req.socket.remoteAddress,
+      req.socket?.remoteAddress,
     );
     const deviceInfo = summarizeDeviceUserAgent(req.headers['user-agent']);
 

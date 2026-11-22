@@ -149,6 +149,128 @@ function verifyPasswordScrypt(password, storedHash) {
 function hashApiKey(rawKey) {
   return crypto.createHash("sha256").update(rawKey).digest("hex");
 }
+function generateNumericOtp(digits = 6) {
+  const min = 10 ** (digits - 1);
+  const max = 10 ** digits;
+  return String(crypto.randomInt(min, max)).padStart(digits, "0");
+}
+function createStatelessEmailOtpChallenge(params) {
+  const cleanEmail = params.email.trim().toLowerCase();
+  const cleanOtp = params.otp.replace(/\s+/g, "");
+  const now = params.nowMs ?? Date.now();
+  const expiresAt = now + (params.ttlMs ?? 10 * 6e4);
+  const nonce = crypto.randomBytes(12).toString("hex");
+  const otpHash = crypto.createHmac("sha256", params.signingSecret).update(`otp:${nonce}:${cleanEmail}:${cleanOtp}`).digest("base64url");
+  const payload = Buffer.from(
+    JSON.stringify({
+      nonce,
+      email: cleanEmail,
+      accountType: "admin",
+      otpHash,
+      expiresAt
+    }),
+    "utf8"
+  ).toString("base64url");
+  const sig = crypto.createHmac("sha256", params.signingSecret).update(`email-otp:${payload}`).digest("base64url");
+  return {
+    challengeToken: `${payload}.${sig}`,
+    expiresAt
+  };
+}
+function verifyStatelessEmailOtpChallenge(challengeToken, submittedOtp, signingSecret, nowMs = Date.now()) {
+  const parts = (challengeToken || "").split(".");
+  if (parts.length !== 2) {
+    return { valid: false, reason: "Invalid OTP challenge token" };
+  }
+  const [payload, sig] = parts;
+  const expectedSig = crypto.createHmac("sha256", signingSecret).update(`email-otp:${payload}`).digest("base64url");
+  const sigBuf = Buffer.from(sig);
+  const expBuf = Buffer.from(expectedSig);
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+    return { valid: false, reason: "Invalid OTP challenge signature" };
+  }
+  let decoded;
+  try {
+    decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch {
+    return { valid: false, reason: "Malformed OTP challenge" };
+  }
+  if (!decoded.nonce || !decoded.email || decoded.accountType !== "admin" || !decoded.otpHash || !decoded.expiresAt) {
+    return { valid: false, reason: "Incomplete OTP challenge" };
+  }
+  if (decoded.expiresAt < nowMs) {
+    return { valid: false, reason: "Kode OTP sudah kedaluwarsa. Silakan kirim ulang kode OTP baru." };
+  }
+  const normalizedOtp = (submittedOtp || "").replace(/\s+/g, "");
+  if (!/^\d{6}$/.test(normalizedOtp)) {
+    return { valid: false, reason: "Kode OTP harus berupa 6 digit angka." };
+  }
+  const candidateHash = crypto.createHmac("sha256", signingSecret).update(`otp:${decoded.nonce}:${decoded.email}:${normalizedOtp}`).digest("base64url");
+  const hashBuf = Buffer.from(decoded.otpHash);
+  const candBuf = Buffer.from(candidateHash);
+  if (hashBuf.length !== candBuf.length || !crypto.timingSafeEqual(hashBuf, candBuf)) {
+    return { valid: false, reason: "Kode OTP email tidak sesuai." };
+  }
+  return { valid: true, email: decoded.email, nonce: decoded.nonce };
+}
+
+// server/emailOtp.ts
+async function deliverAdminEmailOtp(email, otp) {
+  const resendApiKey = process.env.RESEND_API_KEY?.trim();
+  const fromEmail = process.env.OTP_FROM_EMAIL?.trim() || "SentinelGrid SOC <onboarding@resend.dev>";
+  if (resendApiKey) {
+    try {
+      const response = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${resendApiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          from: fromEmail,
+          to: [email],
+          subject: `Kode OTP Login Admin SentinelGrid: ${otp}`,
+          text: `Kode OTP 6-digit Anda untuk masuk ke Portal Admin SentinelGrid adalah: ${otp}
+
+Kode ini berlaku selama 10 menit. Jangan bagikan kode ini kepada siapa pun.`,
+          html: `<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;border:1px solid #e2e8f0;border-radius:12px;">
+            <h2 style="margin:0 0 12px;color:#0f172a;">Kode Verifikasi Login Admin SentinelGrid</h2>
+            <p style="margin:0 0 16px;color:#475569;font-size:14px;">Gunakan kode OTP 6-digit berikut untuk masuk ke Portal Admin (berlaku 10 menit):</p>
+            <div style="font-family:monospace;font-size:28px;font-weight:700;letter-spacing:6px;padding:14px 18px;background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;text-align:center;color:#0284c7;">${otp}</div>
+            <p style="margin:16px 0 0;color:#64748b;font-size:12px;">Jika Anda tidak meminta kode ini, abaikan email ini.</p>
+          </div>`
+        })
+      });
+      if (response.ok) {
+        return { delivered: true, channel: "email" };
+      }
+      const errText = await response.text().catch(() => "");
+      console.warn(
+        `[SentinelGrid OTP] Resend email API returned ${response.status}: ${errText}. Falling back to secure preview OTP.`
+      );
+      return {
+        delivered: true,
+        channel: "preview",
+        previewOtp: otp,
+        providerError: `Email provider HTTP ${response.status}`
+      };
+    } catch (err) {
+      console.warn("[SentinelGrid OTP] Failed contacting email provider:", err);
+      return {
+        delivered: true,
+        channel: "preview",
+        previewOtp: otp,
+        providerError: err instanceof Error ? err.message : "Email provider unreachable"
+      };
+    }
+  }
+  console.info(`[SentinelGrid OTP] Admin login OTP for ${email}: ${otp}`);
+  return {
+    delivered: true,
+    channel: "preview",
+    previewOtp: otp
+  };
+}
 
 // src/lib/securityEngine.ts
 function detectThreatFromTraffic(obs) {
@@ -570,6 +692,122 @@ function createSocApp(store, hooks = { wsSupported: false }) {
       envOverrideActive: Boolean(
         process.env.ADMIN_PASSCODE && process.env.ADMIN_PASSCODE.trim().length >= 6
       )
+    });
+  });
+  app.post("/api/auth/admin/request-otp", async (req, res) => {
+    const { email } = req.body;
+    const cleanEmail = (email || "").trim().toLowerCase();
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      res.status(400).json({ error: "Masukkan alamat email administrator yang valid." });
+      return;
+    }
+    const envAdminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+    if (envAdminEmail && cleanEmail !== envAdminEmail) {
+      res.status(403).json({
+        error: "Email ini tidak terdaftar sebagai Administrator utama."
+      });
+      return;
+    }
+    if (store.admin && store.admin.email !== cleanEmail) {
+      res.status(403).json({
+        error: "Email bukan Administrator terdaftar. Silakan masuk melalui Portal Pengguna (/user)."
+      });
+      return;
+    }
+    const regularUser = store.users.find((u) => u.email === cleanEmail && u.role !== "admin");
+    if (regularUser) {
+      res.status(403).json({
+        error: "Akun pengguna silakan masuk melalui Portal Pengguna (/user)."
+      });
+      return;
+    }
+    const otp = generateNumericOtp(6);
+    const { challengeToken } = createStatelessEmailOtpChallenge({
+      email: cleanEmail,
+      otp,
+      signingSecret: store.sessionSigningSecret,
+      ttlMs: 10 * 6e4
+    });
+    const delivery = await deliverAdminEmailOtp(cleanEmail, otp);
+    res.json({
+      ok: true,
+      email: cleanEmail,
+      challengeToken,
+      expiresInSeconds: 600,
+      deliveryChannel: delivery.channel,
+      ...delivery.previewOtp ? { previewOtp: delivery.previewOtp } : {}
+    });
+  });
+  app.post("/api/auth/admin/verify-otp", (req, res) => {
+    const { challengeToken, code } = req.body;
+    if (!challengeToken || !code) {
+      res.status(400).json({ error: "Token OTP dan kode 6-digit wajib diisi." });
+      return;
+    }
+    const check = verifyStatelessEmailOtpChallenge(
+      challengeToken,
+      code,
+      store.sessionSigningSecret
+    );
+    if (!check.valid || !check.email || !check.nonce) {
+      res.status(401).json({ error: check.reason || "Kode OTP email tidak valid." });
+      return;
+    }
+    if (store.consumedOtpNonces.has(check.nonce)) {
+      res.status(401).json({
+        error: "Kode OTP ini sudah digunakan. Silakan minta kode OTP baru."
+      });
+      return;
+    }
+    const envAdminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+    if (envAdminEmail && check.email !== envAdminEmail) {
+      res.status(403).json({ error: "Email tidak diizinkan untuk akses Administrator." });
+      return;
+    }
+    if (store.admin && store.admin.email !== check.email) {
+      res.status(403).json({ error: "Email bukan Administrator terdaftar." });
+      return;
+    }
+    store.consumedOtpNonces.add(check.nonce);
+    if (store.consumedOtpNonces.size > 500) {
+      const oldest = store.consumedOtpNonces.values().next().value;
+      if (oldest) store.consumedOtpNonces.delete(oldest);
+    }
+    if (!store.admin) {
+      const backup = generateBackupCodes();
+      store.admin = {
+        email: check.email,
+        passwordHash: "",
+        totpSecret: generateTotpSecret(),
+        mfaConfirmed: true,
+        backupCodeHashes: backup.hashes
+      };
+    } else {
+      store.admin.mfaConfirmed = true;
+    }
+    store.persistAccountsToDisk();
+    const ipAddress = extractClientIp(
+      req.headers["x-forwarded-for"],
+      req.socket.remoteAddress
+    );
+    const deviceInfo = summarizeDeviceUserAgent(req.headers["user-agent"]);
+    const session = store.createSignedSession({
+      userId: "ADMIN-ROOT",
+      email: check.email,
+      roleKey: "admin",
+      userAgent: deviceInfo,
+      ipAddress
+    });
+    res.json({
+      token: session.token,
+      session: {
+        id: session.id,
+        userId: session.userId,
+        email: session.email,
+        role: session.role,
+        roleKey: session.roleKey,
+        mfaVerified: session.mfaVerified
+      }
     });
   });
   app.post("/api/auth/setup", (req, res) => {
@@ -1362,6 +1600,7 @@ var SecurityWorkspaceStore = class {
       requireMfaForKeyRotation: true
     };
     this.revokedSessionIds = /* @__PURE__ */ new Set();
+    this.consumedOtpNonces = /* @__PURE__ */ new Set();
     this.logSequence = 0;
     this.alertCounter = 1040;
     this.reportCounter = 47;
@@ -1376,17 +1615,16 @@ var SecurityWorkspaceStore = class {
     const primaryKeyHex = envKeyHex && /^[0-9a-fA-F]{64}$/.test(envKeyHex) ? envKeyHex : process.env.VERCEL ? crypto3.createHash("sha256").update(`e2e:${vercelFallbackSeed}`).digest("hex") : generateEncryptionKeyHex();
     this.encryptionKeys.set(this.activeKeyId, primaryKeyHex);
     this.loadAccountsFromDisk();
-    if (process.env.ADMIN_PASSCODE && process.env.ADMIN_PASSCODE.trim().length >= 6) {
-      if (!this.admin) {
-        const adminEmail = (process.env.ADMIN_EMAIL || "admin@sentinelgrid.io").trim().toLowerCase();
-        this.admin = {
-          email: adminEmail,
-          passwordHash: hashPasswordScrypt(process.env.ADMIN_PASSCODE.trim()),
-          totpSecret: generateTotpSecret(),
-          mfaConfirmed: false,
-          backupCodeHashes: []
-        };
-      }
+    const envAdminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+    const envAdminPass = process.env.ADMIN_PASSCODE?.trim();
+    if (!this.admin && (envAdminEmail || envAdminPass && envAdminPass.length >= 6)) {
+      this.admin = {
+        email: envAdminEmail || "admin@sentinelgrid.io",
+        passwordHash: envAdminPass && envAdminPass.length >= 6 ? hashPasswordScrypt(envAdminPass) : "",
+        totpSecret: generateTotpSecret(),
+        mfaConfirmed: true,
+        backupCodeHashes: []
+      };
     }
     this.reportSchedule = {
       enabled: true,

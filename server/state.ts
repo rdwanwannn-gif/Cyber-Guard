@@ -155,6 +155,7 @@ export class SecurityWorkspaceStore {
     requireMfaForKeyRotation: true,
   };
   public revokedSessionIds: Set<string> = new Set();
+  public consumedOtpNonces: Set<string> = new Set();
 
   private logSequence = 0;
   private alertCounter = 1040;
@@ -189,17 +190,17 @@ export class SecurityWorkspaceStore {
 
     this.loadAccountsFromDisk();
 
-    if (process.env.ADMIN_PASSCODE && process.env.ADMIN_PASSCODE.trim().length >= 6) {
-      if (!this.admin) {
-        const adminEmail = (process.env.ADMIN_EMAIL || 'admin@sentinelgrid.io').trim().toLowerCase();
-        this.admin = {
-          email: adminEmail,
-          passwordHash: hashPasswordScrypt(process.env.ADMIN_PASSCODE.trim()),
-          totpSecret: generateTotpSecret(),
-          mfaConfirmed: false,
-          backupCodeHashes: [],
-        };
-      }
+    const envAdminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+    const envAdminPass = process.env.ADMIN_PASSCODE?.trim();
+    if (!this.admin && (envAdminEmail || (envAdminPass && envAdminPass.length >= 6))) {
+      this.admin = {
+        email: envAdminEmail || 'admin@sentinelgrid.io',
+        passwordHash:
+          envAdminPass && envAdminPass.length >= 6 ? hashPasswordScrypt(envAdminPass) : '',
+        totpSecret: generateTotpSecret(),
+        mfaConfirmed: true,
+        backupCodeHashes: [],
+      };
     }
 
     this.reportSchedule = {

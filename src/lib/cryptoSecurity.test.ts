@@ -3,13 +3,16 @@ import assert from 'node:assert/strict';
 import {
   computeLogIntegrityHash,
   computeTotpCode,
+  createStatelessEmailOtpChallenge,
   decryptTrafficPayload,
   encryptTrafficPayload,
   generateEncryptionKeyHex,
+  generateNumericOtp,
   generateTotpSecret,
   hashPasswordScrypt,
   verifyLogChain,
   verifyPasswordScrypt,
+  verifyStatelessEmailOtpChallenge,
   verifyTotpCode,
 } from './cryptoSecurity';
 import type { DecryptedLogPayload, EncryptedLogEntry } from './types';
@@ -111,4 +114,33 @@ test('scrypt password hashing verifies correct passwords and rejects wrong ones'
   const hash = hashPasswordScrypt('S3ntinel#2026!');
   assert.equal(verifyPasswordScrypt('S3ntinel#2026!', hash), true);
   assert.equal(verifyPasswordScrypt('wrong-password', hash), false);
+});
+
+test('stateless Admin Email OTP challenge verifies valid code and rejects wrong/expired/tampered codes', () => {
+  const secret = 'test-signing-secret-xyz';
+  const otp = generateNumericOtp(6);
+  assert.match(otp, /^\d{6}$/);
+
+  const now = 1_800_000_000_000;
+  const { challengeToken } = createStatelessEmailOtpChallenge({
+    email: 'Admin@SentinelGrid.ID',
+    otp,
+    signingSecret: secret,
+    ttlMs: 600_000,
+    nowMs: now,
+  });
+
+  const ok = verifyStatelessEmailOtpChallenge(challengeToken, otp, secret, now + 5_000);
+  assert.equal(ok.valid, true);
+  assert.equal(ok.email, 'admin@sentinelgrid.id');
+
+  const wrongCode = otp === '123456' ? '654321' : '123456';
+  const bad = verifyStatelessEmailOtpChallenge(challengeToken, wrongCode, secret, now + 5_000);
+  assert.equal(bad.valid, false);
+
+  const expired = verifyStatelessEmailOtpChallenge(challengeToken, otp, secret, now + 700_000);
+  assert.equal(expired.valid, false);
+
+  const tampered = verifyStatelessEmailOtpChallenge(`${challengeToken}x`, otp, secret, now + 5_000);
+  assert.equal(tampered.valid, false);
 });

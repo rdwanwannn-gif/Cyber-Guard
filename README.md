@@ -47,10 +47,11 @@ Repositori sudah dilengkapi konfigurasi siap pakai:
 ### Environment Variables Disarankan di Vercel
 
 Tambahkan pada **Project Settings → Environment Variables** di Vercel Dashboard:
-- `SESSION_SECRET`: String acak panjang (mis. 64 karakter hex) agar sesi konsisten di seluruh instance serverless.
+- `SESSION_SECRET`: String acak panjang (mis. 64 karakter hex) agar sesi & challenge OTP konsisten di seluruh instance serverless.
 - `E2E_LOG_KEY`: 64 karakter hex untuk kunci utama enkripsi AES-256-GCM.
-- `ADMIN_EMAIL` *(opsional)*: Email administrator bawaan.
-- `ADMIN_PASSCODE` *(opsional)*: Passcode administrator awal (min. 6 karakter).
+- `ADMIN_EMAIL` *(opsional)*: Email administrator bawaan untuk login OTP (`/admin`).
+- `RESEND_API_KEY` *(opsional, direkomendasikan di produksi)*: API key dari Resend agar kode OTP 6 digit Admin dikirim langsung ke kotak masuk email Admin. Tanpa variabel ini, sistem menggunakan mode preview/log.
+- `OTP_FROM_EMAIL` *(opsional)*: Alamat pengirim email OTP (default `SentinelGrid SOC <onboarding@resend.dev>`).
 
 ### Deploy via Vercel CLI
 

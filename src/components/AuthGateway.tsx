@@ -7,6 +7,8 @@ import {
   AlertTriangle,
   Globe,
   UserPlus,
+  Mail,
+  RefreshCw,
 } from 'lucide-react';
 import type { Translations } from '../i18n/translations';
 import { generateBrowserTotpFromEnrollmentSecret } from '../lib/clientTotp';
@@ -43,15 +45,18 @@ export function AuthGateway({
   onAuthenticated,
 }: AuthGatewayProps) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
-  const [step, setStep] = useState<'credentials' | 'mfa'>('credentials');
+  const [step, setStep] = useState<'credentials' | 'mfa' | 'admin_otp'>('credentials');
   const [fullName, setFullName] = useState('');
   const [department, setDepartment] = useState('SOC Operations');
   const [email, setEmail] = useState(
-    !initialized && portal === 'admin' ? 'ridwan26abengwan@gmail.com' : '',
+    portal === 'admin' ? 'ridwan26abengwan@gmail.com' : '',
   );
   const [password, setPassword] = useState('');
   const [mfaCode, setMfaCode] = useState('');
+  const [otpCode, setOtpCode] = useState('');
   const [challengeToken, setChallengeToken] = useState('');
+  const [otpDeliveryChannel, setOtpDeliveryChannel] = useState<'email' | 'preview'>('email');
+  const [previewOtp, setPreviewOtp] = useState<string | null>(null);
   const [enrollSecret, setEnrollSecret] = useState<string | null>(null);
   const [backupCodes, setBackupCodes] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(externalNotice ?? null);
@@ -79,17 +84,99 @@ export function AuthGateway({
     }
   }
 
-  async function handleCredentialsSubmit(e: React.FormEvent) {
+  async function requestAdminEmailOtp(targetEmail: string) {
+    setError(null);
+    setLoading(true);
+    try {
+      const res = await fetch('/api/auth/admin/request-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: targetEmail }),
+      });
+      const data = await readJsonSafely<{
+        ok?: boolean;
+        email?: string;
+        challengeToken?: string;
+        deliveryChannel?: 'email' | 'preview';
+        previewOtp?: string;
+      }>(res);
+      if (!res.ok || !data.challengeToken) {
+        setError(data.error || `Gagal mengirim kode OTP (HTTP ${res.status})`);
+        return;
+      }
+      setChallengeToken(data.challengeToken);
+      setOtpDeliveryChannel(data.deliveryChannel || 'email');
+      setPreviewOtp(data.previewOtp || null);
+      setOtpCode('');
+      setStep('admin_otp');
+    } catch (err) {
+      setError(
+        err instanceof Error && err.message
+          ? `Network error while contacting authentication server (${err.message})`
+          : 'Network error while contacting authentication server',
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleAdminEmailSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    await requestAdminEmailOtp(email);
+  }
+
+  async function handleAdminOtpVerifySubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setLoading(true);
     try {
-      const endpoint = initialized ? '/api/auth/login' : '/api/auth/setup';
-      const bodyPayload = initialized ? { email, password, portal } : { email, password };
-      const res = await fetch(endpoint, {
+      const res = await fetch('/api/auth/admin/verify-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(bodyPayload),
+        body: JSON.stringify({ challengeToken, code: otpCode }),
+      });
+      const data = await readJsonSafely<{
+        token?: string;
+        session?: {
+          userId: string;
+          email: string;
+          role: string;
+          roleKey: UserRole;
+          mfaVerified: boolean;
+        };
+      }>(res);
+      if (!res.ok || !data.token || !data.session) {
+        setError(data.error || `Verifikasi OTP gagal (HTTP ${res.status})`);
+        return;
+      }
+      onAuthenticated({
+        token: data.token,
+        userId: data.session.userId,
+        email: data.session.email,
+        role: data.session.role,
+        roleKey: data.session.roleKey,
+        mfaVerified: data.session.mfaVerified,
+      });
+    } catch (err) {
+      setError(
+        err instanceof Error && err.message
+          ? `Network error during OTP verification (${err.message})`
+          : 'Network error during OTP verification',
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleUserCredentialsSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, portal }),
       });
       const data = await readJsonSafely<{
         challengeToken?: string;
@@ -234,8 +321,9 @@ export function AuthGateway({
               setMode('login');
               setStep('credentials');
               setError(null);
-              if (!initialized) setEmail('ridwan26abengwan@gmail.com');
-              else setEmail('');
+              setPreviewOtp(null);
+              setOtpCode('');
+              setEmail('ridwan26abengwan@gmail.com');
               onSwitchPortal('admin');
             }}
             className={`text-center py-2 px-3 rounded-lg text-xs font-medium transition-colors ${
@@ -254,6 +342,8 @@ export function AuthGateway({
               setMode('login');
               setStep('credentials');
               setError(null);
+              setPreviewOtp(null);
+              setOtpCode('');
               setEmail('');
               onSwitchPortal('user');
             }}
@@ -268,7 +358,7 @@ export function AuthGateway({
         </div>
 
         <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-8">
-          {step === 'credentials' && initialized && portal === 'user' && (
+          {step === 'credentials' && portal === 'user' && (
             <div className="grid grid-cols-2 gap-1 p-1 rounded-lg bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 mb-6">
               <button
                 type="button"
@@ -307,38 +397,44 @@ export function AuthGateway({
 
           <div className="mb-6">
             <div className="flex items-center gap-2 text-xs font-medium text-sky-600 dark:text-sky-400 mb-2">
-              {step === 'mfa' ? (
+              {step === 'admin_otp' ? (
+                <Mail className="w-4 h-4" aria-hidden="true" />
+              ) : step === 'mfa' ? (
                 <KeyRound className="w-4 h-4" aria-hidden="true" />
               ) : mode === 'register' && portal === 'user' ? (
                 <UserPlus className="w-4 h-4" aria-hidden="true" />
+              ) : portal === 'admin' ? (
+                <Mail className="w-4 h-4" aria-hidden="true" />
               ) : (
                 <Lock className="w-4 h-4" aria-hidden="true" />
               )}
               <span>
-                {portal === 'admin' ? t.portal.adminPortalBadge : t.portal.userPortalBadge} · TOTP
+                {portal === 'admin'
+                  ? `${t.portal.adminPortalBadge} · Email OTP`
+                  : `${t.portal.userPortalBadge} · TOTP`}
               </span>
             </div>
             <h1 className="font-display text-2xl font-semibold tracking-tight text-slate-900 dark:text-slate-50">
-              {step === 'mfa'
-                ? t.auth.mfaTitle
-                : portal === 'user'
-                  ? mode === 'register'
-                    ? t.auth.registerTitle
-                    : t.portal.userPortalTitle
-                  : initialized
-                    ? t.auth.loginTitle
-                    : t.auth.setupTitle}
+              {step === 'admin_otp'
+                ? t.auth.otpVerifyTitle
+                : step === 'mfa'
+                  ? t.auth.mfaTitle
+                  : portal === 'admin'
+                    ? t.auth.adminOtpTitle
+                    : mode === 'register'
+                      ? t.auth.registerTitle
+                      : t.portal.userPortalTitle}
             </h1>
             <p className="mt-2 text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-              {step === 'mfa'
-                ? t.auth.mfaSubtitle
-                : portal === 'user'
-                  ? mode === 'register'
-                    ? t.auth.registerSubtitle
-                    : t.portal.separateSessionHint
-                  : initialized
-                    ? t.auth.loginSubtitle
-                    : t.auth.setupSubtitle}
+              {step === 'admin_otp'
+                ? t.auth.otpVerifySubtitle
+                : step === 'mfa'
+                  ? t.auth.mfaSubtitle
+                  : portal === 'admin'
+                    ? t.auth.adminOtpSubtitle
+                    : mode === 'register'
+                      ? t.auth.registerSubtitle
+                      : t.portal.separateSessionHint}
             </p>
           </div>
 
@@ -352,20 +448,132 @@ export function AuthGateway({
             </div>
           )}
 
-          {portal === 'user' && !initialized ? (
-            <div className="rounded-lg border border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/30 p-4 text-sm text-amber-900 dark:text-amber-200 space-y-3">
-              <p>{t.portal.userPortalWaitAdmin}</p>
-              <a
-                href="/admin"
-                onClick={(e) => {
-                  e.preventDefault();
-                  onSwitchPortal('admin');
-                }}
-                className="inline-flex items-center px-3 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-medium"
+          {portal === 'admin' && step === 'credentials' ? (
+            /* ADMIN PASSWORDLESS EMAIL-ONLY STEP */
+            <form onSubmit={handleAdminEmailSubmit} className="space-y-4">
+              <div>
+                <label
+                  htmlFor="auth-email"
+                  className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5"
+                >
+                  {t.auth.emailLabel}
+                </label>
+                <input
+                  id="auth-email"
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="ridwan26abengwan@gmail.com"
+                  className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+                />
+              </div>
+
+              <button
+                type="submit"
+                data-testid="request-admin-otp-btn"
+                disabled={loading}
+                className="w-full py-2.5 px-4 rounded-lg bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white text-sm font-medium transition-colors whitespace-nowrap"
               >
-                {t.portal.openAdminPortal}
-              </a>
-            </div>
+                {t.auth.sendOtpBtn}
+              </button>
+            </form>
+          ) : portal === 'admin' && step === 'admin_otp' ? (
+            /* ADMIN 6-DIGIT EMAIL OTP VERIFICATION STEP */
+            <form onSubmit={handleAdminOtpVerifySubmit} className="space-y-4">
+              <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3.5 py-2.5 flex items-center justify-between gap-2 text-xs">
+                <span className="font-mono text-slate-700 dark:text-slate-300 truncate">{email}</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStep('credentials');
+                    setOtpCode('');
+                    setPreviewOtp(null);
+                    setError(null);
+                  }}
+                  className="text-sky-600 dark:text-sky-400 font-medium hover:underline whitespace-nowrap"
+                >
+                  {t.auth.changeAdminEmailBtn}
+                </button>
+              </div>
+
+              {otpDeliveryChannel === 'email' && !previewOtp && (
+                <div className="rounded-lg border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-950/30 px-3.5 py-2.5 text-xs text-emerald-800 dark:text-emerald-200">
+                  {t.auth.otpSentEmailNotice}
+                </div>
+              )}
+
+              {previewOtp && (
+                <div
+                  data-testid="otp-preview-box"
+                  className="rounded-lg border border-sky-200 dark:border-sky-900/60 bg-sky-50 dark:bg-sky-950/30 p-3.5 space-y-2.5"
+                >
+                  <div className="text-xs font-semibold text-sky-900 dark:text-sky-200">
+                    {t.auth.otpPreviewTitle}
+                  </div>
+                  <p className="text-xs text-sky-800 dark:text-sky-300 leading-relaxed">
+                    {t.auth.otpPreviewHint}
+                  </p>
+                  <div className="flex items-center justify-between gap-3">
+                    <code
+                      data-testid="otp-preview-code"
+                      className="px-3 py-1.5 rounded bg-white dark:bg-slate-950 border border-sky-200 dark:border-sky-800 font-mono text-lg font-bold tracking-[0.25em] text-sky-700 dark:text-sky-300"
+                    >
+                      {previewOtp}
+                    </code>
+                    <button
+                      type="button"
+                      data-testid="fill-preview-otp-btn"
+                      onClick={() => setOtpCode(previewOtp)}
+                      className="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-medium whitespace-nowrap"
+                    >
+                      {t.auth.fillOtpHelperBtn}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label
+                  htmlFor="auth-otp-code"
+                  className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5"
+                >
+                  {t.auth.otpCodeLabel}
+                </label>
+                <input
+                  id="auth-otp-code"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  required
+                  maxLength={6}
+                  value={otpCode}
+                  onChange={(e) => setOtpCode(e.target.value.replace(/\D+/g, '').slice(0, 6))}
+                  placeholder="123456"
+                  className="w-full px-3.5 py-2.5 text-base font-mono tracking-[0.35em] rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+                />
+              </div>
+
+              <button
+                type="submit"
+                data-testid="verify-admin-otp-btn"
+                disabled={loading || otpCode.length < 6}
+                className="w-full py-2.5 px-4 rounded-lg bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white text-sm font-medium transition-colors"
+              >
+                {t.auth.verifyOtpBtn}
+              </button>
+
+              <button
+                type="button"
+                data-testid="resend-admin-otp-btn"
+                disabled={loading}
+                onClick={() => requestAdminEmailOtp(email)}
+                className="w-full inline-flex items-center justify-center gap-1.5 py-2 px-4 rounded-lg border border-slate-200 dark:border-slate-800 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              >
+                <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>{t.auth.resendOtpBtn}</span>
+              </button>
+            </form>
           ) : step === 'credentials' && portal === 'user' && mode === 'register' ? (
             registerSuccess ? (
               <div
@@ -479,13 +687,18 @@ export function AuthGateway({
               </form>
             )
           ) : step === 'credentials' ? (
-            <form onSubmit={handleCredentialsSubmit} className="space-y-4">
+            <form onSubmit={handleUserCredentialsSubmit} className="space-y-4">
+              {!initialized && (
+                <div className="rounded-lg border border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/30 p-3 text-xs text-amber-900 dark:text-amber-200">
+                  {t.portal.userPortalWaitAdmin}
+                </div>
+              )}
               <div>
                 <label
                   htmlFor="auth-email"
                   className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5"
                 >
-                  {initialized ? t.auth.accountEmailLabel : t.auth.emailLabel}
+                  {t.auth.accountEmailLabel}
                 </label>
                 <input
                   id="auth-email"
@@ -521,7 +734,7 @@ export function AuthGateway({
                 disabled={loading}
                 className="w-full py-2.5 px-4 rounded-lg bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white text-sm font-medium transition-colors whitespace-nowrap"
               >
-                {initialized ? t.auth.signInBtn : t.auth.createAdminBtn}
+                {t.auth.signInBtn}
               </button>
             </form>
           ) : (
@@ -611,23 +824,21 @@ export function AuthGateway({
               <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
               <span>{t.auth.mfaProtectedNote}</span>
             </div>
-            {initialized && (
-              <div className="flex items-center justify-between gap-2 pt-1">
-                <span>
-                  {portal === 'admin'
-                    ? t.portal.registerHintUserPortal
-                    : t.portal.separateSessionHint}
-                </span>
-                <a
-                  href={portal === 'admin' ? '/user' : '/admin'}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sky-600 dark:text-sky-400 font-medium hover:underline whitespace-nowrap shrink-0"
-                >
-                  {portal === 'admin' ? t.portal.switchToUserLink : t.portal.switchToAdminLink}
-                </a>
-              </div>
-            )}
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <span>
+                {portal === 'admin'
+                  ? t.portal.registerHintUserPortal
+                  : t.portal.separateSessionHint}
+              </span>
+              <a
+                href={portal === 'admin' ? '/user' : '/admin'}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sky-600 dark:text-sky-400 font-medium hover:underline whitespace-nowrap shrink-0"
+              >
+                {portal === 'admin' ? t.portal.switchToUserLink : t.portal.switchToAdminLink}
+              </a>
+            </div>
           </div>
         </div>
       </main>

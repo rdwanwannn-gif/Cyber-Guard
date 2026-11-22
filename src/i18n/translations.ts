@@ -77,6 +77,19 @@ export interface Translations {
     generateHelperBtn: string;
     backToLogin: string;
     mfaProtectedNote: string;
+    adminOtpTitle: string;
+    adminOtpSubtitle: string;
+    sendOtpBtn: string;
+    otpVerifyTitle: string;
+    otpVerifySubtitle: string;
+    otpCodeLabel: string;
+    verifyOtpBtn: string;
+    resendOtpBtn: string;
+    changeAdminEmailBtn: string;
+    otpPreviewTitle: string;
+    otpPreviewHint: string;
+    fillOtpHelperBtn: string;
+    otpSentEmailNotice: string;
   };
   topbar: {
     simulateProbe: string;
@@ -345,7 +358,20 @@ export const TRANSLATIONS: Record<LanguageCode, Translations> = {
       backupCodesLabel: 'Kode Pemulihan Cadangan (Simpan Aman)',
       generateHelperBtn: 'Isi Kode TOTP Dari Kunci Aktivasi',
       backToLogin: 'Kembali ke Login',
-      mfaProtectedNote: 'Sesi dilindungi token HMAC-SHA256 dan verifikasi TOTP RFC 6238.',
+      mfaProtectedNote: 'Sesi dilindungi token HMAC-SHA256 dan verifikasi OTP / TOTP RFC 6238.',
+      adminOtpTitle: 'Masuk Admin dengan Kode OTP Email',
+      adminOtpSubtitle: 'Cukup masukkan email administrator Anda. Kode OTP 6-digit dikirim ke email sebagai pengganti kata sandi.',
+      sendOtpBtn: 'Kirim Kode OTP ke Email',
+      otpVerifyTitle: 'Masukkan Kode OTP dari Email',
+      otpVerifySubtitle: 'Periksa kode verifikasi 6-digit yang dikirim ke email administrator di bawah ini.',
+      otpCodeLabel: 'Kode OTP Email (6-Digit)',
+      verifyOtpBtn: 'Verifikasi OTP & Masuk Admin',
+      resendOtpBtn: 'Kirim Ulang Kode OTP',
+      changeAdminEmailBtn: 'Ganti Email Admin',
+      otpPreviewTitle: 'Kotak Masuk OTP Sementara (Tanpa SMTP/Resend)',
+      otpPreviewHint: 'Variabel RESEND_API_KEY belum dipasang di server. Gunakan kode OTP di bawah ini untuk langsung masuk:',
+      fillOtpHelperBtn: 'Isi Kode OTP Otomatis',
+      otpSentEmailNotice: 'Kode OTP 6-digit telah dikirim ke kotak masuk email Anda (berlaku 10 menit).',
     },
     topbar: {
       simulateProbe: 'Simulasi Serangan',
@@ -612,7 +638,20 @@ export const TRANSLATIONS: Record<LanguageCode, Translations> = {
       backupCodesLabel: 'Backup Recovery Codes (Save Securely)',
       generateHelperBtn: 'Fill TOTP Code from Enrollment Key',
       backToLogin: 'Back to Sign In',
-      mfaProtectedNote: 'Sessions are secured with HMAC-SHA256 tokens and RFC 6238 TOTP.',
+      mfaProtectedNote: 'Sessions are secured with HMAC-SHA256 tokens and OTP / RFC 6238 TOTP.',
+      adminOtpTitle: 'Admin Sign-In via Email OTP',
+      adminOtpSubtitle: 'Enter your administrator email only. A 6-digit OTP replaces passwords for Admin access.',
+      sendOtpBtn: 'Send OTP Code to Email',
+      otpVerifyTitle: 'Enter Email OTP Code',
+      otpVerifySubtitle: 'Enter the 6-digit verification code sent to your administrator email address.',
+      otpCodeLabel: '6-Digit Email OTP Code',
+      verifyOtpBtn: 'Verify OTP & Open Admin Console',
+      resendOtpBtn: 'Resend OTP Code',
+      changeAdminEmailBtn: 'Change Admin Email',
+      otpPreviewTitle: 'Instant OTP Inbox Preview (No SMTP/Resend Key)',
+      otpPreviewHint: 'RESEND_API_KEY is not configured yet. Use this server-issued OTP to sign in right away:',
+      fillOtpHelperBtn: 'Fill OTP Code Automatically',
+      otpSentEmailNotice: 'A 6-digit OTP has been sent to your email inbox (valid for 10 minutes).',
     },
     topbar: {
       simulateProbe: 'Simulate Probe',
@@ -879,7 +918,20 @@ export const TRANSLATIONS: Record<LanguageCode, Translations> = {
       backupCodesLabel: 'バックアップコード（安全に保管）',
       generateHelperBtn: '登録キーから TOTP コードを入力',
       backToLogin: 'ログインに戻る',
-      mfaProtectedNote: 'セッションは HMAC-SHA256 と RFC 6238 TOTP で保護されています。',
+      mfaProtectedNote: 'セッションは HMAC-SHA256 とメール OTP / RFC 6238 TOTP で保護されています。',
+      adminOtpTitle: 'メール OTP による管理者ログイン',
+      adminOtpSubtitle: 'パスワードの代わりに管理者メールアドレスへ送信される 6 桁の OTP で認証します。',
+      sendOtpBtn: 'メールへ OTP コードを送信',
+      otpVerifyTitle: 'メール OTP コードを入力',
+      otpVerifySubtitle: '管理者メールに送信された 6 桁の確認コードを入力してください。',
+      otpCodeLabel: '6 桁メール OTP コード',
+      verifyOtpBtn: 'OTP を確認して管理コンソールへ',
+      resendOtpBtn: 'OTP を再送信',
+      changeAdminEmailBtn: 'メールアドレスを変更',
+      otpPreviewTitle: 'OTP 受信プレビュー（SMTP/Resend 未設定）',
+      otpPreviewHint: 'RESEND_API_KEY 未設定のため、発行された OTP を表示しています:',
+      fillOtpHelperBtn: 'OTP コードを自動入力',
+      otpSentEmailNotice: '6 桁の OTP コードをメールに送信しました（10 分間有効）。',
     },
     topbar: {
       simulateProbe: '脅威シミュレーション',
@@ -1146,7 +1198,20 @@ export const TRANSLATIONS: Record<LanguageCode, Translations> = {
       backupCodesLabel: 'Backup-Wiederherstellungscodes',
       generateHelperBtn: 'TOTP-Code aus Schlüssel ausfüllen',
       backToLogin: 'Zurück zum Login',
-      mfaProtectedNote: 'Sitzungen sind mit HMAC-SHA256-Tokens und RFC 6238 TOTP geschützt.',
+      mfaProtectedNote: 'Sitzungen sind mit HMAC-SHA256 und E-Mail-OTP / RFC 6238 TOTP geschützt.',
+      adminOtpTitle: 'Admin-Anmeldung per E-Mail-OTP',
+      adminOtpSubtitle: 'Geben Sie nur Ihre Admin-E-Mail ein. Ein 6-stelliger E-Mail-OTP ersetzt das Passwort.',
+      sendOtpBtn: 'OTP-Code an E-Mail senden',
+      otpVerifyTitle: 'E-Mail-OTP-Code eingeben',
+      otpVerifySubtitle: 'Geben Sie den 6-stelligen Bestätigungscode aus Ihrem Admin-Postfach ein.',
+      otpCodeLabel: '6-stelliger E-Mail-OTP',
+      verifyOtpBtn: 'OTP bestätigen & Admin öffnen',
+      resendOtpBtn: 'OTP erneut senden',
+      changeAdminEmailBtn: 'Admin-E-Mail ändern',
+      otpPreviewTitle: 'OTP-Postfachvorschau (ohne SMTP/Resend)',
+      otpPreviewHint: 'RESEND_API_KEY ist nicht gesetzt. Nutzen Sie diesen vom Server erzeugten OTP:',
+      fillOtpHelperBtn: 'OTP-Code automatisch einfügen',
+      otpSentEmailNotice: 'Ein 6-stelliger OTP wurde an Ihre E-Mail gesendet (10 Minuten gültig).',
     },
     topbar: {
       simulateProbe: 'Angriff simulieren',

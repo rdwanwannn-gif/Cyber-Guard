@@ -192,3 +192,117 @@ export function verifyPasswordScrypt(password: string, storedHash: string): bool
 export function hashApiKey(rawKey: string): string {
   return crypto.createHash('sha256').update(rawKey).digest('hex');
 }
+
+export function generateNumericOtp(digits = 6): string {
+  const min = 10 ** (digits - 1);
+  const max = 10 ** digits;
+  return String(crypto.randomInt(min, max)).padStart(digits, '0');
+}
+
+export function createStatelessEmailOtpChallenge(params: {
+  email: string;
+  otp: string;
+  signingSecret: string;
+  ttlMs?: number;
+  nowMs?: number;
+}): { challengeToken: string; expiresAt: number } {
+  const cleanEmail = params.email.trim().toLowerCase();
+  const cleanOtp = params.otp.replace(/\s+/g, '');
+  const now = params.nowMs ?? Date.now();
+  const expiresAt = now + (params.ttlMs ?? 10 * 60_000);
+  const nonce = crypto.randomBytes(12).toString('hex');
+  const otpHash = crypto
+    .createHmac('sha256', params.signingSecret)
+    .update(`otp:${nonce}:${cleanEmail}:${cleanOtp}`)
+    .digest('base64url');
+
+  const payload = Buffer.from(
+    JSON.stringify({
+      nonce,
+      email: cleanEmail,
+      accountType: 'admin',
+      otpHash,
+      expiresAt,
+    }),
+    'utf8',
+  ).toString('base64url');
+
+  const sig = crypto
+    .createHmac('sha256', params.signingSecret)
+    .update(`email-otp:${payload}`)
+    .digest('base64url');
+
+  return {
+    challengeToken: `${payload}.${sig}`,
+    expiresAt,
+  };
+}
+
+export function verifyStatelessEmailOtpChallenge(
+  challengeToken: string,
+  submittedOtp: string,
+  signingSecret: string,
+  nowMs = Date.now(),
+): { valid: boolean; email?: string; nonce?: string; reason?: string } {
+  const parts = (challengeToken || '').split('.');
+  if (parts.length !== 2) {
+    return { valid: false, reason: 'Invalid OTP challenge token' };
+  }
+  const [payload, sig] = parts;
+  const expectedSig = crypto
+    .createHmac('sha256', signingSecret)
+    .update(`email-otp:${payload}`)
+    .digest('base64url');
+
+  const sigBuf = Buffer.from(sig);
+  const expBuf = Buffer.from(expectedSig);
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+    return { valid: false, reason: 'Invalid OTP challenge signature' };
+  }
+
+  let decoded: {
+    nonce?: string;
+    email?: string;
+    accountType?: string;
+    otpHash?: string;
+    expiresAt?: number;
+  };
+  try {
+    decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+  } catch {
+    return { valid: false, reason: 'Malformed OTP challenge' };
+  }
+
+  if (
+    !decoded.nonce ||
+    !decoded.email ||
+    decoded.accountType !== 'admin' ||
+    !decoded.otpHash ||
+    !decoded.expiresAt
+  ) {
+    return { valid: false, reason: 'Incomplete OTP challenge' };
+  }
+
+  if (decoded.expiresAt < nowMs) {
+    return { valid: false, reason: 'Kode OTP sudah kedaluwarsa. Silakan kirim ulang kode OTP baru.' };
+  }
+
+  const normalizedOtp = (submittedOtp || '').replace(/\s+/g, '');
+  if (!/^\d{6}$/.test(normalizedOtp)) {
+    return { valid: false, reason: 'Kode OTP harus berupa 6 digit angka.' };
+  }
+
+  const candidateHash = crypto
+    .createHmac('sha256', signingSecret)
+    .update(`otp:${decoded.nonce}:${decoded.email}:${normalizedOtp}`)
+    .digest('base64url');
+
+  const hashBuf = Buffer.from(decoded.otpHash);
+  const candBuf = Buffer.from(candidateHash);
+  if (hashBuf.length !== candBuf.length || !crypto.timingSafeEqual(hashBuf, candBuf)) {
+    return { valid: false, reason: 'Kode OTP email tidak sesuai.' };
+  }
+
+  return { valid: true, email: decoded.email, nonce: decoded.nonce };
+}
+
