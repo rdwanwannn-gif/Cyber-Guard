@@ -61,6 +61,8 @@ export interface Translations {
     mfaSubtitle: string;
     fullNameLabel: string;
     departmentLabel: string;
+    deviceNameLabel: string;
+    deviceNamePlaceholder: string;
     emailLabel: string;
     accountEmailLabel: string;
     passwordLabel: string;
@@ -343,6 +345,8 @@ export const TRANSLATIONS: Record<LanguageCode, Translations> = {
       mfaSubtitle: 'Masukkan kode 6-digit dari aplikasi autentikator atau kode pemulihan cadangan.',
       fullNameLabel: 'Nama Lengkap',
       departmentLabel: 'Divisi / Tim',
+      deviceNameLabel: 'Nama Perangkat (Terdeteksi Otomatis / Opsional)',
+      deviceNamePlaceholder: 'Contoh: Samsung Galaxy S24 / Redmi Note 13 / Laptop Kantor',
       emailLabel: 'Email Administrator',
       accountEmailLabel: 'Email Pengguna',
       passwordLabel: 'Kata Sandi',
@@ -623,6 +627,8 @@ export const TRANSLATIONS: Record<LanguageCode, Translations> = {
       mfaSubtitle: 'Enter the 6-digit code from your authenticator app or a backup recovery code.',
       fullNameLabel: 'Full Name',
       departmentLabel: 'Department / Team',
+      deviceNameLabel: 'Device Name (Auto-Detected / Optional)',
+      deviceNamePlaceholder: 'e.g. Samsung Galaxy S24 / Pixel 8 / Work Laptop',
       emailLabel: 'Administrator Email',
       accountEmailLabel: 'Account Email',
       passwordLabel: 'Password',
@@ -903,6 +909,8 @@ export const TRANSLATIONS: Record<LanguageCode, Translations> = {
       mfaSubtitle: '認証アプリの 6 桁コードまたはリカバリーコードを入力してください。',
       fullNameLabel: '氏名',
       departmentLabel: '部署 / チーム',
+      deviceNameLabel: '端末名（自動検出・任意編集）',
+      deviceNamePlaceholder: '例: Samsung Galaxy S24 / Pixel 8 / 業務PC',
       emailLabel: '管理者メールアドレス',
       accountEmailLabel: 'メールアドレス',
       passwordLabel: 'パスワード',
@@ -1183,6 +1191,8 @@ export const TRANSLATIONS: Record<LanguageCode, Translations> = {
       mfaSubtitle: 'Geben Sie den 6-stelligen TOTP-Code oder einen Wiederherstellungscode ein.',
       fullNameLabel: 'Vollständiger Name',
       departmentLabel: 'Abteilung / Team',
+      deviceNameLabel: 'Gerätename (Automatisch erkannt / Optional)',
+      deviceNamePlaceholder: 'z. B. Samsung Galaxy S24 / Pixel 8 / Arbeits-Laptop',
       emailLabel: 'Administrator-E-Mail',
       accountEmailLabel: 'Konto-E-Mail',
       passwordLabel: 'Passwort',

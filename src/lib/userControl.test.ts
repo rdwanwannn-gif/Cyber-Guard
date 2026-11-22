@@ -12,6 +12,7 @@ import {
   isValidUserStatus,
   portalSessionStorageKey,
   resolvePortalFromPathname,
+  splitDeviceSummary,
   summarizeDeviceUserAgent,
   validateComplaintInput,
   validateRegistrationInput,
@@ -43,15 +44,45 @@ test('validateRegistrationInput accepts valid fields and rejects invalid email o
   assert.equal(shortPass.valid, false);
 });
 
-test('summarizeDeviceUserAgent and extractClientIp format remote device metadata cleanly', () => {
+test('summarizeDeviceUserAgent and extractClientIp format remote device models cleanly', () => {
+  // Legacy Android UA without model falls back to Chrome · Android
   assert.equal(
     summarizeDeviceUserAgent('Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126.0 Mobile'),
     'Chrome · Android',
   );
+  // Android UA with specific Samsung / Xiaomi / Pixel model includes device name
+  assert.equal(
+    summarizeDeviceUserAgent(
+      'Mozilla/5.0 (Linux; Android 14; SM-S918B Build/UP1A.231005.007) AppleWebKit/537.36 Chrome/126.0 Mobile',
+    ),
+    'Samsung Galaxy S23 Ultra (SM-S918B) · Chrome · Android',
+  );
+  assert.equal(
+    summarizeDeviceUserAgent(
+      'Mozilla/5.0 (Linux; Android 13; Redmi Note 12) AppleWebKit/537.36 Chrome/124.0 Mobile',
+    ),
+    'Xiaomi Redmi Note 12 · Chrome · Android',
+  );
+  // Chrome UA-Reduction token "K" is ignored unless real model hint is passed
+  assert.equal(
+    summarizeDeviceUserAgent(
+      'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 Chrome/126.0.0.0 Mobile Safari/537.36',
+      '"SM-A546E"',
+    ),
+    'Samsung Galaxy A54 (SM-A546E) · Chrome · Android',
+  );
   assert.equal(
     summarizeDeviceUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) Safari/604.1'),
-    'Safari · iOS',
+    'Apple iPhone · Safari · iOS',
   );
+  assert.deepEqual(splitDeviceSummary('Samsung Galaxy A54 (SM-A546E) · Chrome · Android'), {
+    deviceName: 'Samsung Galaxy A54 (SM-A546E)',
+    platformSummary: 'Chrome · Android',
+  });
+  assert.deepEqual(splitDeviceSummary('Chrome · Android'), {
+    deviceName: 'Android Smartphone',
+    platformSummary: 'Chrome · Android',
+  });
   assert.equal(extractClientIp('203.0.113.45, 10.0.0.2', '::ffff:127.0.0.1'), '203.0.113.45');
   assert.equal(extractClientIp(undefined, '::ffff:192.168.1.50'), '192.168.1.50');
 });

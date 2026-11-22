@@ -189,25 +189,180 @@ export function validateRegistrationInput(input: {
   };
 }
 
-export function summarizeDeviceUserAgent(uaRaw: string | undefined): string {
+const SAMSUNG_PREFIX_MAP: Array<[RegExp, string]> = [
+  [/^SM-S928/i, 'Samsung Galaxy S24 Ultra'],
+  [/^SM-S926/i, 'Samsung Galaxy S24+'],
+  [/^SM-S921/i, 'Samsung Galaxy S24'],
+  [/^SM-S918/i, 'Samsung Galaxy S23 Ultra'],
+  [/^SM-S916/i, 'Samsung Galaxy S23+'],
+  [/^SM-S911/i, 'Samsung Galaxy S23'],
+  [/^SM-S908/i, 'Samsung Galaxy S22 Ultra'],
+  [/^SM-A556/i, 'Samsung Galaxy A55'],
+  [/^SM-A546/i, 'Samsung Galaxy A54'],
+  [/^SM-A536/i, 'Samsung Galaxy A53'],
+  [/^SM-A356/i, 'Samsung Galaxy A35'],
+  [/^SM-A346/i, 'Samsung Galaxy A34'],
+  [/^SM-A155/i, 'Samsung Galaxy A15'],
+  [/^SM-F956/i, 'Samsung Galaxy Z Fold6'],
+  [/^SM-F741/i, 'Samsung Galaxy Z Flip6'],
+];
+
+const GENERIC_UA_TOKENS = new Set([
+  'k',
+  'u',
+  'wv',
+  'mobile',
+  'tablet',
+  'android',
+  'linux',
+  'x11',
+  'win64',
+  'x64',
+  'wow64',
+]);
+
+export function formatDeviceModelName(rawModel: string | undefined): string | null {
+  const cleaned = (rawModel || '')
+    .replace(/^["']|["']$/g, '')
+    .replace(/\bBuild\/.*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80);
+
+  if (!cleaned) return null;
+  if (GENERIC_UA_TOKENS.has(cleaned.toLowerCase())) return null;
+  if (/^[a-z]{2}(?:-[A-Z]{2})?$/.test(cleaned)) return null; // locale token e.g. en-US
+  if (/^Android\s+\d+/i.test(cleaned)) return null;
+
+  for (const [pattern, friendly] of SAMSUNG_PREFIX_MAP) {
+    if (pattern.test(cleaned)) {
+      return `${friendly} (${cleaned})`;
+    }
+  }
+  if (/^SM-[A-Z0-9]+/i.test(cleaned)) {
+    return `Samsung ${cleaned}`;
+  }
+  if (/^Pixel\s+/i.test(cleaned)) {
+    return cleaned.startsWith('Google ') ? cleaned : `Google ${cleaned}`;
+  }
+  if (/^(Redmi|POCO|Mi\s)/i.test(cleaned)) {
+    return `Xiaomi ${cleaned}`;
+  }
+  if (/^CPH\d+/i.test(cleaned)) {
+    return `OPPO ${cleaned}`;
+  }
+  if (/^RMX\d+/i.test(cleaned)) {
+    return `realme ${cleaned}`;
+  }
+  if (/^V2\d{3}/i.test(cleaned)) {
+    return `vivo ${cleaned}`;
+  }
+  if (/^ASUS_/i.test(cleaned)) {
+    return `ASUS ${cleaned}`;
+  }
+
+  return cleaned;
+}
+
+export function extractDeviceModelFromUserAgent(uaRaw: string | undefined): string | null {
   const ua = (uaRaw || '').trim();
-  if (!ua) return 'Unknown Device';
+  if (!ua) return null;
+
+  const androidMatch = ua.match(/\(Linux;\s*(?:U;\s*)?Android[^;)]*;\s*([^)]+)\)/i);
+  if (androidMatch?.[1]) {
+    const segments = androidMatch[1]
+      .split(';')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (let i = segments.length - 1; i >= 0; i -= 1) {
+      const candidate = formatDeviceModelName(segments[i]);
+      if (candidate) return candidate;
+    }
+  }
+
+  if (/ipad/i.test(ua)) return 'Apple iPad';
+  if (/iphone/i.test(ua)) return 'Apple iPhone';
+  if (/cros/i.test(ua)) return 'Chromebook';
+  if (/macintosh|mac os x/i.test(ua)) return 'Apple Mac';
+  if (/windows nt 10\.0|windows nt 11/i.test(ua)) return 'Windows PC';
+  if (/windows/i.test(ua)) return 'Windows Workstation';
+  if (/linux/i.test(ua) && !/android/i.test(ua)) return 'Linux Workstation';
+
+  return null;
+}
+
+export function summarizeDeviceUserAgent(
+  uaRaw: string | undefined,
+  deviceHintRaw?: string | undefined,
+): string {
+  const ua = (uaRaw || '').trim();
+  const explicitModel = formatDeviceModelName(deviceHintRaw);
+  const uaModel = extractDeviceModelFromUserAgent(ua);
+  const deviceModel = explicitModel || uaModel;
+
+  if (!ua && !deviceModel) return 'Unknown Device';
 
   let os = 'Unknown OS';
   if (/android/i.test(ua)) os = 'Android';
   else if (/iphone|ipad|ios/i.test(ua)) os = 'iOS';
+  else if (/cros/i.test(ua)) os = 'ChromeOS';
   else if (/windows/i.test(ua)) os = 'Windows';
   else if (/mac os x|macintosh/i.test(ua)) os = 'macOS';
   else if (/linux/i.test(ua)) os = 'Linux';
 
   let browser = 'Browser';
-  if (/edg\//i.test(ua)) browser = 'Edge';
+  if (/edg(?:a|ios)?\//i.test(ua)) browser = 'Edge';
+  else if (/opr\/|opera/i.test(ua)) browser = 'Opera';
+  else if (/samsungbrowser\//i.test(ua)) browser = 'Samsung Internet';
   else if (/chrome|crios/i.test(ua)) browser = 'Chrome';
   else if (/firefox|fxios/i.test(ua)) browser = 'Firefox';
   else if (/safari/i.test(ua)) browser = 'Safari';
   else if (/curl|postman|node|playwright/i.test(ua)) browser = 'API / Automation';
 
+  if (deviceModel) {
+    return `${deviceModel} · ${browser} · ${os}`;
+  }
   return `${browser} · ${os}`;
+}
+
+export function splitDeviceSummary(deviceInfo: string | undefined): {
+  deviceName: string;
+  platformSummary: string;
+} {
+  const raw = (deviceInfo || '').trim();
+  if (!raw) {
+    return { deviceName: 'Unknown Device', platformSummary: 'Unknown Platform' };
+  }
+  const parts = raw.split('·').map((p) => p.trim()).filter(Boolean);
+  if (parts.length >= 3) {
+    return {
+      deviceName: parts[0],
+      platformSummary: parts.slice(1).join(' · '),
+    };
+  }
+  if (parts.length === 2) {
+    const osPart = parts[1].toLowerCase();
+    const fallbackName =
+      osPart === 'android'
+        ? 'Android Smartphone'
+        : osPart === 'ios'
+          ? 'Apple iOS Device'
+          : osPart === 'windows'
+            ? 'Windows PC'
+            : osPart === 'macos'
+              ? 'Apple Mac'
+              : osPart === 'linux'
+                ? 'Linux Workstation'
+                : 'Client Device';
+    return {
+      deviceName: fallbackName,
+      platformSummary: raw,
+    };
+  }
+  return {
+    deviceName: raw,
+    platformSummary: raw,
+  };
 }
 
 export function extractClientIp(forwardedFor: string | string[] | undefined, remoteAddr: string | undefined): string {
