@@ -1,0 +1,6 @@
+{
+  "name": "SentinelGrid",
+  "description": "Real-time enterprise cybersecurity monitoring, threat detection, E2E encrypted traffic logs, SIEM API integration, automated weekly compliance reports, and MFA workspace.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
