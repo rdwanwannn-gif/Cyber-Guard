@@ -134,15 +134,23 @@ export default function App() {
 
   useEffect(() => {
     fetch('/api/auth/status')
-      .then((res) => res.json())
-      .then((data: { initialized: boolean; wsSupported?: boolean }) => {
+      .then(async (res) => {
+        if (!res.ok) {
+          throw new Error(`Auth status HTTP ${res.status}`);
+        }
+        return (await res.json()) as { initialized: boolean; wsSupported?: boolean };
+      })
+      .then((data) => {
         setAuthInitialized(data.initialized);
         if (typeof data.wsSupported === 'boolean') {
           setWsSupported(data.wsSupported);
         }
       })
-      .catch(() => {
+      .catch((err) => {
         setAuthInitialized(false);
+        if (err instanceof Error && err.message) {
+          setAuthNotice(`Server API belum merespons (${err.message}). Pastikan endpoint /api aktif.`);
+        }
       });
   }, []);
 

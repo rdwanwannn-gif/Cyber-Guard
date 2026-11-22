@@ -55,11 +55,29 @@ export function AuthGateway({
   const [enrollSecret, setEnrollSecret] = useState<string | null>(null);
   const [backupCodes, setBackupCodes] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(externalNotice ?? null);
+  React.useEffect(() => {
+    if (externalNotice) {
+      setError(externalNotice);
+    }
+  }, [externalNotice]);
   const [registerSuccess, setRegisterSuccess] = useState<{
     email: string;
     requireAdminApproval: boolean;
   } | null>(null);
   const [loading, setLoading] = useState(false);
+
+  async function readJsonSafely<T>(res: Response): Promise<T & { error?: string }> {
+    const raw = await res.text();
+    if (!raw) return {} as T & { error?: string };
+    try {
+      return JSON.parse(raw) as T & { error?: string };
+    } catch {
+      const stripped = raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      return {
+        error: `Server error HTTP ${res.status}${stripped ? `: ${stripped.slice(0, 140)}` : ''}`,
+      } as T & { error?: string };
+    }
+  }
 
   async function handleCredentialsSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -73,22 +91,25 @@ export function AuthGateway({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(bodyPayload),
       });
-      const data = (await res.json()) as {
-        error?: string;
+      const data = await readJsonSafely<{
         challengeToken?: string;
         totpSecret?: string;
         backupCodes?: string[];
-      };
+      }>(res);
       if (!res.ok) {
-        setError(data.error || 'Authentication failed');
+        setError(data.error || `Authentication failed (HTTP ${res.status})`);
         return;
       }
       setChallengeToken(data.challengeToken || '');
       setEnrollSecret(data.totpSecret || null);
       setBackupCodes(data.backupCodes || []);
       setStep('mfa');
-    } catch {
-      setError('Network error while contacting authentication server');
+    } catch (err) {
+      setError(
+        err instanceof Error && err.message
+          ? `Network error while contacting authentication server (${err.message})`
+          : 'Network error while contacting authentication server',
+      );
     } finally {
       setLoading(false);
     }
@@ -105,13 +126,12 @@ export function AuthGateway({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fullName, email, password, department }),
       });
-      const data = (await res.json()) as {
-        error?: string;
+      const data = await readJsonSafely<{
         requireAdminApproval?: boolean;
         user?: { email: string };
-      };
+      }>(res);
       if (!res.ok) {
-        setError(data.error || 'Registration failed');
+        setError(data.error || `Registration failed (HTTP ${res.status})`);
         return;
       }
       setRegisterSuccess({
@@ -136,8 +156,7 @@ export function AuthGateway({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ challengeToken, code: mfaCode }),
       });
-      const data = (await res.json()) as {
-        error?: string;
+      const data = await readJsonSafely<{
         token?: string;
         session?: {
           userId: string;
@@ -146,9 +165,9 @@ export function AuthGateway({
           roleKey: UserRole;
           mfaVerified: boolean;
         };
-      };
+      }>(res);
       if (!res.ok || !data.token || !data.session) {
-        setError(data.error || 'MFA verification failed');
+        setError(data.error || `MFA verification failed (HTTP ${res.status})`);
         return;
       }
       onAuthenticated({
